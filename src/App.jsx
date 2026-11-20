@@ -41,13 +41,13 @@ export default function App() {
   const [editCustName, setEditCustName] = useState("");
   const [editCustPhone, setEditCustPhone] = useState("");
 
-  // Modal បន្ថែមកម្ចីថ្មី (បន្ថែមរយៈពេលខ្ចី termMonths និង ទ្រព្យបញ្ចាំ collateral)
+  // Modal បន្ថែមកម្ចីថ្មី
   const [showAddLoanModal, setShowAddLoanModal] = useState(false);
   const [selectedCustomerForLoan, setSelectedCustomerForLoan] = useState(null);
   const [currency, setCurrency] = useState("USD");
   const [totalAmount, setTotalAmount] = useState("");
   const [termMonths, setTermMonths] = useState("6");
-  const [repaymentStyle, setRepaymentStyle] = useState("interest_only"); // 'interest_only' (បង់តែការប្រាក់រាល់ខែ ដើមចុងគ្រា) | 'installment' (រំលោះដើម+ការស្មើគ្នា)
+  const [repaymentStyle, setRepaymentStyle] = useState("interest_only"); // 'interest_only' | 'installment'
   const [interestType, setInterestType] = useState("percentage");
   const [interestRate, setInterestRate] = useState("2");
   const [interestAmount, setInterestAmount] = useState("");
@@ -255,7 +255,7 @@ export default function App() {
     setIsSubmitting(false);
   };
 
-  // បង្កើតកម្ចីថ្មី + បង្កើតតារាងកាលវិភាគបង់ប្រាក់ប្រចាំខែ (Auto Schedule Generation)
+  // បង្កើតកម្ចីថ្មី + បង្កើតតារាងកាលវិភាគបង់ប្រាក់ប្រចាំខែ
   const handleCreateLoanForCustomer = async (e) => {
     e.preventDefault();
     if (isSubmitting) return;
@@ -302,7 +302,6 @@ export default function App() {
       return;
     }
 
-    // គណនា និងបង្កើតជួរកាលវិភាគបង់ប្រាក់ប្រចាំខែ (1 ដល់ N ខែ)
     const scheduleRows = [];
     const today = new Date();
     let remBalance = principal;
@@ -317,7 +316,6 @@ export default function App() {
       if (repaymentStyle === "installment") {
         pDue = i === months ? remBalance : monthlyPrincipal;
       } else {
-        // បង់តែការប្រាក់រាល់ខែ ហើយបង់ដើមនៅខែចុងក្រោយ
         pDue = i === months ? principal : 0;
       }
 
@@ -457,7 +455,6 @@ export default function App() {
       return;
     }
 
-    // ប្រសិនបើបង់តាមជួរកាលវិភាគ (Schedule) សូម Mark ជួរនោះថា 'paid'
     if (targetScheduleItem) {
       await supabase
         .from("loan_schedules")
@@ -468,7 +465,6 @@ export default function App() {
     let updatedRemaining = targetLoan.total_amount - targetLoan.paid_amount;
 
     if (payType === "principal") {
-      // បើបង់រំលោះទាំងដើមនិងការ ដកចំណែកការប្រាក់ចេញដើម្បីកាត់ដើមពិតប្រាកដ (ឬកាត់តាមចំនួនជាក់ស្ដែង)
       const principalReduced = targetScheduleItem && targetScheduleItem.principal_due > 0
         ? Math.min(amountToPay, targetScheduleItem.principal_due)
         : amountToPay;
@@ -529,17 +525,19 @@ export default function App() {
     }
   };
 
-  // មុខងារ 1-Click Copy សាររំលឹកបង់ប្រាក់ជាភាសាខ្មែរ
-  const copyReminderMessage = (loan) => {
+  // មុខងារ 1-Click Copy សាររំលឹកបង់ប្រាក់ (បូកសរុបតាមអតិថិជនម្នាក់)
+  const copyReminderMessage = (alertGroup) => {
     const now = new Date();
     const curMonth = `${KHMER_MONTHS[now.getMonth()]} ${now.getFullYear()}`;
-    const amtText = loan.interest_type === "fixed"
-      ? formatMoney(loan.interest_amount, loan.interest_currency || loan.currency)
-      : formatMoney(loan.interest_amount, loan.currency);
+    
+    const parts = [];
+    if (alertGroup.totalInterestUSD > 0) parts.push(formatMoney(alertGroup.totalInterestUSD, "USD"));
+    if (alertGroup.totalInterestKHR > 0) parts.push(formatMoney(alertGroup.totalInterestKHR, "KHR"));
+    const amtText = parts.length > 0 ? parts.join(" និង ") : "$0";
 
-    const message = `សួស្តីបង ${loan.borrower_name} ថ្ងៃទី ${loan.payment_day || 5} នេះដល់កំណត់បង់ការប្រាក់ប្រចាំ${curMonth} ចំនួន ${amtText} ហើយ។ សូមអរគុណបង!`;
+    const message = `សួស្តីបង ${alertGroup.borrower_name} ថ្ងៃនេះដល់កំណត់បង់ការប្រាក់ប្រចាំ${curMonth} ចំនួន ${amtText} ហើយ។ សូមអរគុណបង!`;
     navigator.clipboard.writeText(message);
-    setCopiedId(loan.id);
+    setCopiedId(alertGroup.customer_id);
     setTimeout(() => setCopiedId(null), 2500);
   };
 
@@ -564,16 +562,43 @@ export default function App() {
     return { label: `ថ្ងៃកំណត់ទី ${targetDay}`, color: "bg-blue-50 text-blue-700", priority: 3 };
   };
 
-  // បញ្ជីត្រូវប្រមូលប្រាក់ប្រចាំថ្ងៃ (Today's Collection & Overdue Priority List)
+  // បញ្ជីត្រូវប្រមូលប្រាក់ប្រចាំថ្ងៃ (Group តាម customer_id កុំឱ្យស្ទួនឈ្មោះ)
   const collectionAlerts = useMemo(() => {
-    return loans
+    const activeDueLoans = loans
       .filter((l) => l.status === "កំពុងដំណើរការ")
       .map((l) => ({ ...l, dueInfo: getLoanDueStatus(l) }))
-      .filter((l) => l.dueInfo.priority <= 2)
-      .sort((a, b) => a.dueInfo.priority - b.dueInfo.priority);
+      .filter((l) => l.dueInfo.priority <= 2);
+
+    const groupedMap = {};
+    activeDueLoans.forEach((l) => {
+      const key = l.customer_id || l.borrower_name;
+      if (!groupedMap[key]) {
+        groupedMap[key] = {
+          customer_id: l.customer_id,
+          borrower_name: l.borrower_name,
+          phone: l.phone,
+          dueInfo: l.dueInfo,
+          totalInterestUSD: 0,
+          totalInterestKHR: 0,
+          overdueLoans: [],
+        };
+      }
+
+      const intCur = l.interest_type === "fixed" ? (l.interest_currency || l.currency) : l.currency;
+      const intAmt = Number(l.interest_amount || 0);
+      if (intCur === "KHR") groupedMap[key].totalInterestKHR += intAmt;
+      else groupedMap[key].totalInterestUSD += intAmt;
+
+      if (l.dueInfo.priority < groupedMap[key].dueInfo.priority) {
+        groupedMap[key].dueInfo = l.dueInfo;
+      }
+      groupedMap[key].overdueLoans.push(l);
+    });
+
+    return Object.values(groupedMap).sort((a, b) => a.dueInfo.priority - b.dueInfo.priority);
   }, [loans]);
 
-  // ស្ថិតិ និងការវិភាគហិរញ្ញវត្ថុ (Analytics & Daily Cash Closing)
+  // ស្ថិតិ និងការវិភាគហិរញ្ញវត្ថុ
   const analyticsData = useMemo(() => {
     let disbursedUSD = 0, disbursedKHR = 0;
     let outstandingUSD = 0, outstandingKHR = 0;
@@ -597,7 +622,6 @@ export default function App() {
       }
     });
 
-    // បូកសរុបចំណូលតាមខែសម្រាប់ក្រាហ្វិក
     const monthlyMap = {};
     payments.forEach((p) => {
       const isToday = p.payment_date && p.payment_date.startsWith(todayStr);
@@ -918,7 +942,7 @@ export default function App() {
         {/* ========================================================= */}
         {activeTab === "customers" && (
           <>
-            {/* បញ្ជីអតិថិជនត្រូវប្រមូលប្រាក់បន្ទាន់ (Today's Collection & Overdue Priority Box) */}
+            {/* បញ្ជីអតិថិជនត្រូវប្រមូលប្រាក់បន្ទាន់ (Grouped by Customer កុំឱ្យស្ទួន) */}
             {collectionAlerts.length > 0 && (
               <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 space-y-3">
                 <div className="flex justify-between items-center">
@@ -929,37 +953,52 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {collectionAlerts.map((loan) => (
-                    <div key={loan.id} className="bg-white p-3.5 rounded-xl border border-amber-200 shadow-sm flex flex-col justify-between space-y-2.5">
+                  {collectionAlerts.map((item) => (
+                    <div key={item.customer_id || item.borrower_name} className="bg-white p-3.5 rounded-xl border border-amber-200 shadow-sm flex flex-col justify-between space-y-2.5">
                       <div className="flex justify-between items-start">
                         <div>
-                          <p className="font-bold text-sm text-slate-900">{loan.borrower_name}</p>
-                          <p className="text-xs text-slate-500">📞 {loan.phone}</p>
+                          <p className="font-bold text-sm text-slate-900">
+                            {item.borrower_name}{" "}
+                            {item.overdueLoans.length > 1 && (
+                              <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full ml-1">
+                                {item.overdueLoans.length} កម្ចី
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-xs text-slate-500">📞 {item.phone}</p>
                         </div>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] ${loan.dueInfo.color}`}>
-                          {loan.dueInfo.label}
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] ${item.dueInfo.color}`}>
+                          {item.dueInfo.label}
                         </span>
                       </div>
 
-                      <div className="text-xs bg-slate-50 p-2 rounded-lg flex justify-between">
-                        <span className="text-slate-500">ការប្រាក់ត្រូវបង់៖</span>
-                        <span className="font-bold text-blue-600">
-                          {formatMoney(loan.interest_amount, loan.interest_currency || loan.currency)}
-                        </span>
+                      <div className="text-xs bg-slate-50 p-2 rounded-lg flex justify-between items-center">
+                        <span className="text-slate-500">ការប្រាក់ត្រូវបង់សរុប៖</span>
+                        <div className="font-bold text-blue-600 text-right">
+                          {item.totalInterestUSD > 0 && <div>{formatMoney(item.totalInterestUSD, "USD")}</div>}
+                          {item.totalInterestKHR > 0 && <div>{formatMoney(item.totalInterestKHR, "KHR")}</div>}
+                          {item.totalInterestUSD === 0 && item.totalInterestKHR === 0 && <div>$0</div>}
+                        </div>
                       </div>
 
                       <div className="flex gap-1.5 pt-1">
                         <button
-                          onClick={() => copyReminderMessage(loan)}
+                          onClick={() => copyReminderMessage(item)}
                           className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold py-1.5 rounded-lg transition"
                         >
-                          {copiedId === loan.id ? "✅ បាន Copy សារ!" : "📋 Copy សាររំលឹក"}
+                          {copiedId === item.customer_id ? "✅ បាន Copy សារ!" : "📋 Copy សាររំលឹក"}
                         </button>
                         <button
-                          onClick={() => handleOpenPayModal(loan)}
+                          onClick={() => {
+                            if (item.overdueLoans.length === 1) {
+                              handleOpenPayModal(item.overdueLoans[0]);
+                            } else {
+                              setExpandedCustomerId(item.customer_id);
+                            }
+                          }}
                           className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold py-1.5 rounded-lg transition"
                         >
-                          + កត់ត្រាបង់
+                          {item.overdueLoans.length > 1 ? "មើលកម្ចីទាំងអស់" : "+ កត់ត្រាបង់"}
                         </button>
                       </div>
                     </div>
@@ -1285,7 +1324,6 @@ export default function App() {
                 {loadingHistory ? (
                   <div className="text-center py-6 text-xs text-slate-500">កំពុងទាញទិន្នន័យ...</div>
                 ) : detailSubTab === "schedule" ? (
-                  /* តារាងកាលវិភាគប្រចាំខែ (Amortization / Monthly Schedule Table) */
                   <div className="overflow-x-auto">
                     {loanScheduleList.length === 0 ? (
                       <div className="text-center py-6 text-xs text-slate-400 bg-slate-50 rounded-xl">
@@ -1345,7 +1383,6 @@ export default function App() {
                     )}
                   </div>
                 ) : (
-                  /* តារាងប្រវត្តិបានបង់រួច (Payments History) */
                   <div className="overflow-x-auto">
                     {paymentsHistory.length === 0 ? (
                       <div className="text-center py-6 text-xs text-slate-400 bg-slate-50 rounded-xl">
