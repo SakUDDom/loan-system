@@ -92,37 +92,30 @@ export default function App() {
       setCurrentUser(profile);
       loadAllData(profile);
     } catch {
-      const fallback = { id: authUser.id, name: authUser.email.split("@")[0], role: "admin" };
+      const fallback = { id: authUser.id, name: authUser.email.split("@")[0], role: "user" };
       setCurrentUser(fallback);
       loadAllData(fallback);
     }
   };
 
   const loadAllData = async (user = currentUser) => {
+    if (!user) return;
     setLoadingData(true);
-    const [cRes, lRes] = await Promise.all([
-      supabase.from("customers").select("*").order("created_at", { ascending: false }),
-      supabase.from("loans").select("*").order("created_at", { ascending: false })
-    ]);
 
-    let loadedCustomers = cRes.data || [];
-    let loadedLoans = lRes.data || [];
+    // ទាញទិន្នន័យ (Supabase RLS នឹងច្រោះឱ្យដោយស្វ័យប្រវត្តិ ហើយយើងក៏ filter បន្ថែមដើម្បីសុក្រឹតភាព)
+    let custQuery = supabase.from("customers").select("*").order("created_at", { ascending: false });
+    let loanQuery = supabase.from("loans").select("*").order("created_at", { ascending: false });
 
-    if (user && user.role === "user") {
-      if (user.customer_id) {
-        loadedCustomers = loadedCustomers.filter((c) => c.id === user.customer_id);
-        loadedLoans = loadedLoans.filter((l) => l.customer_id === user.customer_id);
-      } else {
-        loadedCustomers = loadedCustomers.filter((c) =>
-          c.full_name?.toLowerCase().includes(user.email.split("@")[0].toLowerCase())
-        );
-        const cIds = loadedCustomers.map((c) => c.id);
-        loadedLoans = loadedLoans.filter((l) => cIds.includes(l.customer_id));
-      }
+    const isAdminUser = user.role === "admin" || user.role === "super-admin";
+    if (!isAdminUser) {
+      custQuery = custQuery.eq("created_by", user.id);
+      loanQuery = loanQuery.eq("created_by", user.id);
     }
 
-    setCustomers(loadedCustomers);
-    setLoans(loadedLoans);
+    const [cRes, lRes] = await Promise.all([custQuery, loanQuery]);
+
+    setCustomers(cRes.data || []);
+    setLoans(lRes.data || []);
     setLoadingData(false);
   };
 
@@ -172,10 +165,15 @@ export default function App() {
     setCurrentUser(null);
   };
 
+  // បង្កើត Customer ថ្មី (ភ្ជាប់ created_by: currentUser.id)
   const handleCreateCustomer = async (e) => {
     e.preventDefault();
     const { error } = await supabase.from("customers").insert([
-      { full_name: newCustName, phone: newCustPhone }
+      { 
+        full_name: newCustName, 
+        phone: newCustPhone,
+        created_by: currentUser.id 
+      }
     ]);
 
     if (!error) {
@@ -204,7 +202,6 @@ export default function App() {
       .eq("id", editingCust.id);
 
     if (!error) {
-      // update ឈ្មោះ និងលេខទូរស័ព្ទក្នុង loans ដែរ
       await supabase
         .from("loans")
         .update({ borrower_name: editCustName, phone: editCustPhone })
@@ -217,7 +214,7 @@ export default function App() {
     }
   };
 
-  // បន្ថែមកម្ចីថ្មី
+  // បន្ថែមកម្ចីថ្មី (ភ្ជាប់ created_by: currentUser.id)
   const handleCreateLoanForCustomer = async (e) => {
     e.preventDefault();
     let finalInterestValue = 0;
@@ -240,6 +237,7 @@ export default function App() {
       interest_currency: interestType === "fixed" ? interestCurrency : currency,
       payment_day: parseInt(paymentDay) || 5,
       status: "កំពុងដំណើរការ",
+      created_by: currentUser.id,
     };
 
     const { error } = await supabase.from("loans").insert([newLoan]);
@@ -328,7 +326,7 @@ export default function App() {
     const amountToPay = parseFloat(payAmountInput);
     if (!amountToPay || amountToPay <= 0) return;
 
-    const recordedAdminName = currentUser.full_name || currentUser.email.split("@")[0];
+    const recordedUserName = currentUser.full_name || currentUser.email.split("@")[0];
 
     const paymentRecord = {
       loan_id: targetLoan.id,
@@ -337,7 +335,8 @@ export default function App() {
       currency: targetLoan.currency,
       for_month: selectedMonth,
       note: payNote,
-      recorded_by: recordedAdminName,
+      recorded_by: recordedUserName,
+      created_by: currentUser.id,
     };
 
     const { data: insertedPayment, error: pError } = await supabase
@@ -502,7 +501,6 @@ export default function App() {
     });
   }, [customerListWithLoans, searchQuery, statusFilter]);
 
-  // មុខងារ Export Data ទៅជា Excel/CSV ដែលគាំទ្រភាសាខ្មែរ
   const exportToExcelCSV = () => {
     if (loans.length === 0) {
       alert("មិនមានទិន្នន័យសម្រាប់ Export ឡើយ!");
@@ -597,19 +595,15 @@ export default function App() {
     );
   }
 
-  const isClientRole = currentUser.role === "user";
-
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 pb-12">
       {/* Navbar */}
       <nav className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm">
         <div>
-          <h1 className="text-xl font-bold text-slate-800">
-            {isClientRole ? "ផ្ទាំងព័ត៌មានកម្ចីផ្ទាល់ខ្លួន" : "ប្រព័ន្ធតាមដានកម្ចី និងអតិថិជន"}
-          </h1>
+          <h1 className="text-xl font-bold text-slate-800">ប្រព័ន្ធតាមដានកម្ចី និងអតិថិជន</h1>
           <p className="text-xs text-slate-500">
             គណនី៖ <span className="font-semibold text-slate-700">{currentUser.full_name || currentUser.email}</span> | សិទ្ធិ៖{" "}
-            <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase ${isClientRole ? "bg-amber-100 text-amber-800" : "bg-blue-100 text-blue-700"}`}>
+            <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded text-xs font-semibold uppercase">
               {currentUser.role || "user"}
             </span>
           </p>
@@ -623,120 +617,110 @@ export default function App() {
       </nav>
 
       <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-6">
-        {/* Dashboard Summary Cards */}
-        {!isClientRole && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-semibold text-slate-500 uppercase">អតិថិជនសរុប</span>
-              <p className="text-2xl font-bold text-slate-900 mt-1">{stats.totalCustomers} នាក់</p>
-              <span className="text-[11px] text-blue-600 font-medium">សរុប {loans.length} កម្ចី</span>
-            </div>
-
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-semibold text-slate-500 uppercase">ទំហំប្រាក់កម្ចីសរុប</span>
-              <p className="text-lg font-bold text-emerald-600 mt-1">${stats.disbursedUSD.toLocaleString()}</p>
-              <p className="text-xs font-semibold text-emerald-700">{stats.disbursedKHR.toLocaleString()} ៛</p>
-            </div>
-
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-semibold text-slate-500 uppercase">ប្រាក់ដើមនៅជំពាក់ក្រៅ</span>
-              <p className="text-lg font-bold text-rose-600 mt-1">${stats.outstandingUSD.toLocaleString()}</p>
-              <p className="text-xs font-semibold text-rose-700">{stats.outstandingKHR.toLocaleString()} ៛</p>
-            </div>
-
-            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-              <span className="text-xs font-semibold text-slate-500 uppercase">កម្ចីហួសថ្ងៃកំណត់</span>
-              <p className="text-2xl font-bold text-rose-600 mt-1">{stats.overdueCount} ករណី</p>
-              <span className="text-[11px] text-slate-400">គិតតាមថ្ងៃកំណត់ប្រចាំខែ</span>
-            </div>
+        {/* Dashboard Summary Cards (បង្ហាញតាមទិន្នន័យដែល User នោះមានសិទ្ធិឃើញ) */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <span className="text-xs font-semibold text-slate-500 uppercase">អតិថិជនរបស់អ្នក</span>
+            <p className="text-2xl font-bold text-slate-900 mt-1">{stats.totalCustomers} នាក់</p>
+            <span className="text-[11px] text-blue-600 font-medium">សរុប {loans.length} កម្ចី</span>
           </div>
-        )}
 
-        {/* Header Actions */}
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <span className="text-xs font-semibold text-slate-500 uppercase">ទំហំប្រាក់កម្ចីសរុប</span>
+            <p className="text-lg font-bold text-emerald-600 mt-1">${stats.disbursedUSD.toLocaleString()}</p>
+            <p className="text-xs font-semibold text-emerald-700">{stats.disbursedKHR.toLocaleString()} ៛</p>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <span className="text-xs font-semibold text-slate-500 uppercase">ប្រាក់ដើមនៅជំពាក់</span>
+            <p className="text-lg font-bold text-rose-600 mt-1">${stats.outstandingUSD.toLocaleString()}</p>
+            <p className="text-xs font-semibold text-rose-700">{stats.outstandingKHR.toLocaleString()} ៛</p>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+            <span className="text-xs font-semibold text-slate-500 uppercase">កម្ចីហួសថ្ងៃកំណត់</span>
+            <p className="text-2xl font-bold text-rose-600 mt-1">{stats.overdueCount} ករណី</p>
+            <span className="text-[11px] text-slate-400">គិតតាមថ្ងៃកំណត់ប្រចាំខែ</span>
+          </div>
+        </div>
+
+        {/* Header Actions (បើកឱ្យគ្រប់គណនីបង្កើត និង Export បាន) */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">
-              {isClientRole ? "កម្ចីរបស់អ្នក" : "បញ្ជីអតិថិជនទាំងអស់"}
-            </h2>
-            <p className="text-sm text-slate-500">
-              {isClientRole ? "ពិនិត្យសមតុល្យបំណុល កាលបរិច្ឆេទ និងប្រវត្តិបង់ប្រាក់របស់អ្នក" : "គ្រប់គ្រងអតិថិជន និងកិច្ចសន្យាកម្ចីទាំងអស់នៅកន្លែងតែមួយ"}
-            </p>
+            <h2 className="text-2xl font-bold text-slate-900">បញ្ជីអតិថិជន</h2>
+            <p className="text-sm text-slate-500">គ្រប់គ្រងអតិថិជន និងកិច្ចសន្យាកម្ចីរបស់អ្នក</p>
           </div>
 
-          {!isClientRole && (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={exportToExcelCSV}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-1.5"
-              >
-                <span>📊</span> Export Excel/CSV
-              </button>
-              <button
-                onClick={() => setShowAddCustomerModal(true)}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-1.5"
-              >
-                <span>+</span> បង្កើតអតិថិជនថ្មី
-              </button>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={exportToExcelCSV}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-1.5"
+            >
+              <span>📊</span> Export Excel/CSV
+            </button>
+            <button
+              onClick={() => setShowAddCustomerModal(true)}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm px-4 py-2.5 rounded-xl shadow-sm transition flex items-center gap-1.5"
+            >
+              <span>+</span> បង្កើតអតិថិជនថ្មី
+            </button>
+          </div>
         </div>
 
         {/* Search Bar & Filter Tabs */}
-        {!isClientRole && (
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
-            <div className="relative w-full md:w-80">
-              <input
-                type="text"
-                placeholder="🔍 វាយឈ្មោះ ឬលេខទូរស័ព្ទ..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full border border-slate-300 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-3 top-2 text-slate-400 hover:text-slate-600 text-sm"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-
-            <div className="flex gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-semibold self-stretch md:self-auto overflow-x-auto">
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
+          <div className="relative w-full md:w-80">
+            <input
+              type="text"
+              placeholder="🔍 វាយឈ្មោះ ឬលេខទូរស័ព្ទ..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full border border-slate-300 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {searchQuery && (
               <button
-                onClick={() => setStatusFilter("all")}
-                className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "all" ? "bg-white text-blue-700 shadow-sm" : "text-slate-600"}`}
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-2 text-slate-400 hover:text-slate-600 text-sm"
               >
-                ទាំងអស់ ({customerListWithLoans.length})
+                ✕
               </button>
-              <button
-                onClick={() => setStatusFilter("active")}
-                className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "active" ? "bg-white text-blue-700 shadow-sm" : "text-slate-600"}`}
-              >
-                កំពុងជំពាក់
-              </button>
-              <button
-                onClick={() => setStatusFilter("overdue")}
-                className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "overdue" ? "bg-white text-rose-700 shadow-sm" : "text-slate-600"}`}
-              >
-                ហួសកំណត់ ({stats.overdueCount})
-              </button>
-              <button
-                onClick={() => setStatusFilter("completed")}
-                className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "completed" ? "bg-white text-blue-700 shadow-sm" : "text-slate-600"}`}
-              >
-                សងដាច់រួច
-              </button>
-            </div>
+            )}
           </div>
-        )}
+
+          <div className="flex gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-semibold self-stretch md:self-auto overflow-x-auto">
+            <button
+              onClick={() => setStatusFilter("all")}
+              className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "all" ? "bg-white text-blue-700 shadow-sm" : "text-slate-600"}`}
+            >
+              ទាំងអស់ ({customerListWithLoans.length})
+            </button>
+            <button
+              onClick={() => setStatusFilter("active")}
+              className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "active" ? "bg-white text-blue-700 shadow-sm" : "text-slate-600"}`}
+            >
+              កំពុងជំពាក់
+            </button>
+            <button
+              onClick={() => setStatusFilter("overdue")}
+              className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "overdue" ? "bg-white text-rose-700 shadow-sm" : "text-slate-600"}`}
+            >
+              ហួសកំណត់ ({stats.overdueCount})
+            </button>
+            <button
+              onClick={() => setStatusFilter("completed")}
+              className={`px-3 py-1.5 rounded-lg transition whitespace-nowrap ${statusFilter === "completed" ? "bg-white text-blue-700 shadow-sm" : "text-slate-600"}`}
+            >
+              សងដាច់រួច
+            </button>
+          </div>
+        </div>
 
         {/* តារាង Accordion អតិថិជន */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           {loadingData ? (
             <div className="p-8 text-center text-slate-500">កំពុងទាញទិន្នន័យ...</div>
           ) : filteredCustomers.length === 0 ? (
-            <div className="p-10 text-center text-slate-400">មិនមានទិន្នន័យត្រូវបង្ហាញឡើយ។</div>
+            <div className="p-10 text-center text-slate-400">មិនទាន់មានអតិថិជននៅឡើយទេ។ ចុច «+ បង្កើតអតិថិជនថ្មី» ដើម្បីចាប់ផ្ដើម!</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -748,17 +732,17 @@ export default function App() {
                     <th className="py-3 px-4">ចំនួនកម្ចី</th>
                     <th className="py-3 px-4">បំណុលនៅសល់ ($)</th>
                     <th className="py-3 px-4">បំណុលនៅសល់ (៛)</th>
-                    {!isClientRole && <th className="py-3 px-4 text-center">សកម្មភាព</th>}
+                    <th className="py-3 px-4 text-center">សកម្មភាព</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredCustomers.map((cust) => {
-                    const isExpanded = expandedCustomerId === cust.id || isClientRole;
+                    const isExpanded = expandedCustomerId === cust.id;
                     return (
                       <React.Fragment key={cust.id}>
                         <tr
                           className={`hover:bg-blue-50/40 cursor-pointer transition ${isExpanded ? "bg-blue-50/30" : ""}`}
-                          onClick={() => !isClientRole && setExpandedCustomerId(isExpanded ? null : cust.id)}
+                          onClick={() => setExpandedCustomerId(isExpanded ? null : cust.id)}
                         >
                           <td className="py-3.5 px-4 text-slate-400 text-xs">
                             {isExpanded ? "▼" : "▶"}
@@ -776,55 +760,51 @@ export default function App() {
                           <td className="py-3.5 px-4 font-bold text-rose-600">
                             {cust.totalRemainingKHR > 0 ? formatMoney(cust.totalRemainingKHR, "KHR") : "-"}
                           </td>
-                          {!isClientRole && (
-                            <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex items-center justify-center gap-1.5">
-                                <button
-                                  onClick={() => {
-                                    setSelectedCustomerForLoan(cust);
-                                    setShowAddLoanModal(true);
-                                  }}
-                                  className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2.5 py-1.5 rounded-lg transition font-medium"
-                                >
-                                  + បន្ថែមកម្ចី
-                                </button>
-                                <button
-                                  onClick={() => handleOpenEditCust(cust)}
-                                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-2.5 py-1.5 rounded-lg transition font-medium"
-                                >
-                                  កែប្រែ
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteCustomer(cust)}
-                                  className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs px-2.5 py-1.5 rounded-lg transition font-semibold"
-                                >
-                                  លុប
-                                </button>
-                              </div>
-                            </td>
-                          )}
+                          <td className="py-3.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => {
+                                  setSelectedCustomerForLoan(cust);
+                                  setShowAddLoanModal(true);
+                                }}
+                                className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-2.5 py-1.5 rounded-lg transition font-medium"
+                              >
+                                + បន្ថែមកម្ចី
+                              </button>
+                              <button
+                                onClick={() => handleOpenEditCust(cust)}
+                                className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-2.5 py-1.5 rounded-lg transition font-medium"
+                              >
+                                កែប្រែ
+                              </button>
+                              <button
+                                onClick={() => handleDeleteCustomer(cust)}
+                                className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs px-2.5 py-1.5 rounded-lg transition font-semibold"
+                              >
+                                លុប
+                              </button>
+                            </div>
+                          </td>
                         </tr>
 
-                        {/* Accordion Detail: កិច្ចសន្យាកម្ចីទាំងអស់ */}
+                        {/* Accordion Detail */}
                         {isExpanded && (
                           <tr className="bg-slate-50/70 border-b border-slate-200">
-                            <td colSpan={isClientRole ? "6" : "7"} className="p-4 sm:p-6">
+                            <td colSpan="7" className="p-4 sm:p-6">
                               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
                                 <div className="flex justify-between items-center">
                                   <h4 className="font-bold text-xs uppercase text-slate-500 tracking-wider">
                                     កិច្ចសន្យាកម្ចីរបស់ {cust.full_name} ({cust.loansList.length})
                                   </h4>
-                                  {!isClientRole && (
-                                    <button
-                                      onClick={() => {
-                                        setSelectedCustomerForLoan(cust);
-                                        setShowAddLoanModal(true);
-                                      }}
-                                      className="text-xs text-blue-600 font-semibold hover:underline"
-                                    >
-                                      + បន្ថែមកម្ចីថ្មីទៀត
-                                    </button>
-                                  )}
+                                  <button
+                                    onClick={() => {
+                                      setSelectedCustomerForLoan(cust);
+                                      setShowAddLoanModal(true);
+                                    }}
+                                    className="text-xs text-blue-600 font-semibold hover:underline"
+                                  >
+                                    + បន្ថែមកម្ចីថ្មីទៀត
+                                  </button>
                                 </div>
 
                                 {cust.loansList.length === 0 ? (
@@ -866,36 +846,30 @@ export default function App() {
                                                 </span>
                                               </td>
                                               <td className="py-3 px-3 text-center space-x-1.5">
-                                                {!isClientRole && (
-                                                  <button
-                                                    onClick={() => handleOpenPayModal(loan)}
-                                                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] px-2.5 py-1 rounded-lg transition"
-                                                  >
-                                                    + បង់ប្រាក់
-                                                  </button>
-                                                )}
+                                                <button
+                                                  onClick={() => handleOpenPayModal(loan)}
+                                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] px-2.5 py-1 rounded-lg transition"
+                                                >
+                                                  + បង់ប្រាក់
+                                                </button>
                                                 <button
                                                   onClick={() => handleOpenDetail(loan)}
                                                   className="bg-slate-800 hover:bg-slate-900 text-white text-[11px] px-2.5 py-1 rounded-lg transition"
                                                 >
                                                   មើលតារាងខែ
                                                 </button>
-                                                {!isClientRole && (
-                                                  <>
-                                                    <button
-                                                      onClick={() => handleOpenEditLoan(loan)}
-                                                      className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] px-2 py-1 rounded-lg transition"
-                                                    >
-                                                      កែប្រែ
-                                                    </button>
-                                                    <button
-                                                      onClick={() => handleDeleteLoan(loan)}
-                                                      className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-[11px] px-2 py-1 rounded-lg transition font-semibold"
-                                                    >
-                                                      លុប
-                                                    </button>
-                                                  </>
-                                                )}
+                                                <button
+                                                  onClick={() => handleOpenEditLoan(loan)}
+                                                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] px-2 py-1 rounded-lg transition"
+                                                >
+                                                  កែប្រែ
+                                                </button>
+                                                <button
+                                                  onClick={() => handleDeleteLoan(loan)}
+                                                  className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-[11px] px-2 py-1 rounded-lg transition font-semibold"
+                                                >
+                                                  លុប
+                                                </button>
                                               </td>
                                             </tr>
                                           );
@@ -978,7 +952,7 @@ export default function App() {
                         <th className="py-2.5 px-3">ប្រភេទនៃការបង់</th>
                         <th className="py-2.5 px-3">ចំនួនទឹកប្រាក់</th>
                         <th className="py-2.5 px-3">ចំណាំ</th>
-                        <th className="py-2.5 px-3">អ្នកទទួល (Admin)</th>
+                        <th className="py-2.5 px-3">អ្នកទទួល</th>
                         <th className="py-2.5 px-3 text-center">សកម្មភាព</th>
                       </tr>
                     </thead>
@@ -1003,7 +977,7 @@ export default function App() {
                           <td className="py-2.5 px-3 font-bold text-slate-900">{formatMoney(pm.amount, pm.currency)}</td>
                           <td className="py-2.5 px-3 text-slate-500">{pm.note || "-"}</td>
                           <td className="py-2.5 px-3 font-medium text-slate-700">
-                            👤 {pm.recorded_by || "Admin"}
+                            👤 {pm.recorded_by || "Staff"}
                           </td>
                           <td className="py-2.5 px-3 text-center space-x-1">
                             <button
@@ -1020,14 +994,12 @@ export default function App() {
                             >
                               🖨️ ស្លីប
                             </button>
-                            {!isClientRole && (
-                              <button
-                                onClick={() => handleDeletePayment(pm)}
-                                className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 px-2 py-1 rounded text-[11px] font-semibold transition"
-                              >
-                                លុប
-                              </button>
-                            )}
+                            <button
+                              onClick={() => handleDeletePayment(pm)}
+                              className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 px-2 py-1 rounded text-[11px] font-semibold transition"
+                            >
+                              លុប
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -1583,7 +1555,7 @@ export default function App() {
                   </div>
                   <div className="flex justify-between">
                     <span>បុគ្គលិកទទួលប្រាក់៖</span>
-                    <span className="font-semibold text-slate-800">{receiptData.recorded_by || "Admin"}</span>
+                    <span className="font-semibold text-slate-800">{receiptData.recorded_by || "Staff"}</span>
                   </div>
                   {receiptData.note && (
                     <div className="flex justify-between text-[11px] text-slate-400">
